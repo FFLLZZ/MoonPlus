@@ -619,6 +619,24 @@ function PlayPageClient() {
     }
   }, [searchParams, currentEpisodeIndex]);
 
+  // 监听集数变化，移除已显示的跳转按钮
+  useEffect(() => {
+    // 移除已显示的跳转按钮
+    if (playRecordJumpLayerRef.current && artPlayerRef.current) {
+      try {
+        artPlayerRef.current.layers.remove('play-record-jump');
+        playRecordJumpLayerRef.current = null;
+      } catch (err) {
+        console.warn('[PlayRecordJump] 移除跳转按钮失败:', err);
+      }
+    }
+
+    // 如果不是首次检查，标记为已关闭，不再显示跳转按钮
+    if (!playRecordJumpInitialCheckRef.current) {
+      playRecordJumpDismissedRef.current = true;
+    }
+  }, [currentEpisodeIndex]);
+
   // 监听 URL 参数变化，当切换到不同视频时重新加载页面
   useEffect(() => {
     const urlTitle = searchParams.get('title') || '';
@@ -1281,6 +1299,10 @@ function PlayPageClient() {
 
   // 用于记录是否需要在播放器 ready 后跳转到指定进度
   const resumeTimeRef = useRef<number | null>(null);
+  // 播放记录跳转按钮状态
+  const playRecordJumpDismissedRef = useRef(false); // 记录用户是否已经关闭过跳转按钮
+  const playRecordJumpLayerRef = useRef<any>(null); // 保存跳转按钮层的引用
+  const playRecordJumpInitialCheckRef = useRef(true); // 记录是否是首次检查播放记录
   // 上次使用的音量，默认 0.7
   const lastVolumeRef = useRef<number>(0.7);
   // 上次使用的播放速率，默认 1.0
@@ -7051,6 +7073,189 @@ function PlayPageClient() {
           setIsVideoLoading(false);
           setVideoError(null);
           setCorsFailedUrl(null);
+        });
+
+        // 监听视频播放事件，检查是否需要显示播放记录跳转按钮
+        artPlayerRef.current.on('video:playing', () => {
+          // 检查是否需要显示播放记录跳转按钮
+          // 条件：当前播放时间 < 10秒 且 播放记录时间 > 10秒
+          const checkPlayRecordJump = async () => {
+            try {
+              // 如果用户已经关闭过跳转按钮，不再显示
+              if (playRecordJumpDismissedRef.current) {
+                return;
+              }
+
+              const currentTime = artPlayerRef.current?.currentTime || 0;
+
+              // 如果当前播放时间已经大于等于10秒，不显示跳转按钮
+              if (currentTime >= 10) {
+                // 标记已经进行过首次检查，避免切集后再显示
+                playRecordJumpInitialCheckRef.current = false;
+                if (playRecordJumpLayerRef.current) {
+                  artPlayerRef.current.layers.remove('play-record-jump');
+                  playRecordJumpLayerRef.current = null;
+                }
+                return;
+              }
+
+              // 获取播放记录
+              const allRecords = await getAllPlayRecords();
+              const key = generateStorageKey(
+                currentSourceRef.current,
+                currentIdRef.current
+              );
+              const record = allRecords[key];
+
+              if (record) {
+                const recordIndex = record.index - 1;
+                const recordTime = record.play_time;
+
+                // 检查是否是当前集数且播放记录时间大于10秒且当前时间小于10秒
+                if (
+                  recordIndex === currentEpisodeIndexRef.current &&
+                  recordTime > 10 &&
+                  currentTime < 10
+                ) {
+                  // 如果已经添加过，不重复添加
+                  if (playRecordJumpLayerRef.current) {
+                    return;
+                  }
+
+                  // 标记已经进行过首次检查
+                  playRecordJumpInitialCheckRef.current = false;
+
+                  // 格式化时间显示
+                  const formatTime = (seconds: number): string => {
+                    const h = Math.floor(seconds / 3600);
+                    const m = Math.floor((seconds % 3600) / 60);
+                    const s = Math.floor(seconds % 60);
+                    if (h > 0) {
+                      return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                    }
+                    return `${m}:${s.toString().padStart(2, '0')}`;
+                  };
+
+                  // 添加到播放器 layers
+                  playRecordJumpLayerRef.current = artPlayerRef.current.layers.add({
+                    name: 'play-record-jump',
+                    html: `
+                      <div id="play-record-jump-container" style="
+                        position: absolute;
+                        left: 16px;
+                        bottom: 60px;
+                        z-index: 20;
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
+                        padding: 8px 12px;
+                        background-color: rgba(0, 0, 0, 0.75);
+                        border-radius: 6px;
+                        color: white;
+                        font-size: 14px;
+                        font-family: system-ui, -apple-system, sans-serif;
+                        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+                        backdrop-filter: blur(4px);
+                        pointer-events: auto;
+                      ">
+                        <span style="margin-right: 4px;">
+                          上次播放到 ${formatTime(recordTime)}
+                        </span>
+                        <button id="play-record-jump-btn" style="
+                          padding: 4px 12px;
+                          background-color: rgba(255, 255, 255, 0.2);
+                          border: 1px solid rgba(255, 255, 255, 0.3);
+                          border-radius: 4px;
+                          color: white;
+                          font-size: 13px;
+                          cursor: pointer;
+                          transition: all 0.2s;
+                          font-weight: 500;
+                        ">
+                          跳转
+                        </button>
+                        <button id="play-record-dismiss-btn" style="
+                          padding: 4px 8px;
+                          background-color: transparent;
+                          border: none;
+                          color: rgba(255, 255, 255, 0.7);
+                          font-size: 18px;
+                          cursor: pointer;
+                          line-height: 1;
+                          transition: color 0.2s;
+                        " title="关闭">
+                          ×
+                        </button>
+                      </div>
+                    `,
+                    style: {
+                      position: 'absolute',
+                      left: 0,
+                      bottom: 0,
+                      width: '100%',
+                      height: '100%',
+                      pointerEvents: 'none',
+                    },
+                  });
+
+                  // 绑定事件
+                  const jumpBtn = document.getElementById('play-record-jump-btn');
+                  const dismissBtn = document.getElementById('play-record-dismiss-btn');
+
+                  if (jumpBtn) {
+                    jumpBtn.addEventListener('mouseenter', () => {
+                      jumpBtn.style.backgroundColor = 'rgba(255, 255, 255, 0.3)';
+                    });
+                    jumpBtn.addEventListener('mouseleave', () => {
+                      jumpBtn.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+                    });
+                    jumpBtn.addEventListener('click', () => {
+                      if (artPlayerRef.current) {
+                        artPlayerRef.current.currentTime = recordTime;
+                        artPlayerRef.current.notice.show = `已跳转到 ${formatTime(recordTime)}`;
+                      }
+                      playRecordJumpDismissedRef.current = true;
+                      if (playRecordJumpLayerRef.current) {
+                        artPlayerRef.current.layers.remove('play-record-jump');
+                        playRecordJumpLayerRef.current = null;
+                      }
+                    });
+                  }
+
+                  if (dismissBtn) {
+                    dismissBtn.addEventListener('mouseenter', () => {
+                      dismissBtn.style.color = 'white';
+                    });
+                    dismissBtn.addEventListener('mouseleave', () => {
+                      dismissBtn.style.color = 'rgba(255, 255, 255, 0.7)';
+                    });
+                    dismissBtn.addEventListener('click', () => {
+                      playRecordJumpDismissedRef.current = true;
+                      if (playRecordJumpLayerRef.current) {
+                        artPlayerRef.current.layers.remove('play-record-jump');
+                        playRecordJumpLayerRef.current = null;
+                      }
+                    });
+                  }
+
+                  console.log('[PlayRecordJump] 显示跳转按钮，当前时间:', currentTime, '记录时间:', recordTime);
+                } else {
+                  // 不满足显示条件，也标记为已检查过
+                  playRecordJumpInitialCheckRef.current = false;
+                }
+              } else {
+                // 没有播放记录，也标记为已检查过
+                playRecordJumpInitialCheckRef.current = false;
+              }
+            } catch (err) {
+              console.error('[PlayRecordJump] 检查播放记录失败:', err);
+              // 即使出错也标记为已检查过
+              playRecordJumpInitialCheckRef.current = false;
+            }
+          };
+
+          // 延迟检查，确保播放器已经稳定
+          setTimeout(checkPlayRecordJump, 500);
         });
 
         // 监听视频时间更新事件，实现跳过片头片尾
